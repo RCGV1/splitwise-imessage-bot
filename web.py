@@ -1,9 +1,8 @@
 """
 Web Onboarding and Management Dashboard for Splitwise iMessage Bot.
-Provides an easy browser-based onboarding flow:
-- Web login with Splitwise OAuth or API Key
-- Group selector
-- AI provider & key configuration with live test
+- Real Splitwise API data only (Zero mock/fake data)
+- Custom Connectors for Google Gemini and OpenAI with 1-Click Link Authorization
+- Group selector & real debts ledger
 - macOS permissions checker & live iMessage test
 - Interactive AI debt explainer chat simulator
 - Automated reminder dispatch
@@ -66,17 +65,21 @@ def get_status():
     bridge = IMessageBridge(dry_run=True)
     has_perm, perm_msg = bridge.check_permissions()
 
+    ai = AIExplainer()
+    has_ai = ai.is_configured()
+
     return {
         "splitwise": {
-            "connected": not user_profile.get("is_mock", True),
-            "is_mock": user_profile.get("is_mock", True),
+            "connected": user_profile.get("connected", False),
             "user": user_profile,
             "group_id": config.SPLITWISE_GROUP_ID,
             "has_consumer_keys": bool(config.SPLITWISE_CONSUMER_KEY and config.SPLITWISE_CONSUMER_SECRET)
         },
         "ai": {
             "provider": config.AI_PROVIDER,
-            "connected": config.has_ai_creds()
+            "connected": has_ai,
+            "has_openai": bool(config.OPENAI_API_KEY and config.OPENAI_API_KEY != "your_openai_api_key_here"),
+            "has_gemini": bool(config.GEMINI_API_KEY and config.GEMINI_API_KEY != "your_gemini_api_key_here")
         },
         "permissions": {
             "applescript": "AppleScript" not in perm_msg or has_perm,
@@ -89,6 +92,29 @@ def get_status():
             "dry_run": config.DRY_RUN
         }
     }
+
+# ---------------------------------------------------------------------------
+# Direct Link Connectors for Google and OpenAI
+# ---------------------------------------------------------------------------
+@app.get("/connect/google")
+def connect_google_via_link(key: str):
+    """Direct link authorization for Google Gemini."""
+    clean_key = key.strip()
+    if clean_key:
+        config.save_env_updates({"AI_PROVIDER": "gemini", "GEMINI_API_KEY": clean_key})
+        global ai_client
+        ai_client = AIExplainer()
+    return RedirectResponse("/?authorized=google")
+
+@app.get("/connect/openai")
+def connect_openai_via_link(key: str):
+    """Direct link authorization for OpenAI."""
+    clean_key = key.strip()
+    if clean_key:
+        config.save_env_updates({"AI_PROVIDER": "openai", "OPENAI_API_KEY": clean_key})
+        global ai_client
+        ai_client = AIExplainer()
+    return RedirectResponse("/?authorized=openai")
 
 @app.get("/oauth/login")
 def oauth_login(request: Request):
@@ -165,7 +191,7 @@ def select_group(payload: GroupSelectRequest):
 
 @app.get("/api/group/details")
 def get_active_group_details():
-    group_id = config.SPLITWISE_GROUP_ID or 101
+    group_id = config.SPLITWISE_GROUP_ID
     return sw_client.get_group_details(group_id)
 
 @app.post("/api/config/ai")
@@ -215,7 +241,10 @@ def test_imessage(payload: TestIMessageRequest):
 
 @app.post("/api/ai/ask")
 def ask_ai_explanation(payload: AskAIRequest):
-    group_id = config.SPLITWISE_GROUP_ID or 101
+    group_id = config.SPLITWISE_GROUP_ID
+    if not group_id:
+        return {"success": False, "error": "Please select a Splitwise group first."}
+
     context = sw_client.get_user_debt_context(group_id, payload.user_name_or_phone)
     if not context:
         return {"success": False, "error": f"Member '{payload.user_name_or_phone}' not found in group."}
@@ -234,7 +263,9 @@ def ask_ai_explanation(payload: AskAIRequest):
 @app.post("/api/bot/remind")
 def trigger_reminders(payload: TriggerRemindRequest):
     bot = SplitwiseBot(dry_run=not payload.live)
-    group_id = config.SPLITWISE_GROUP_ID or 101
+    group_id = config.SPLITWISE_GROUP_ID
+    if not group_id:
+        return {"success": False, "error": "Please select a Splitwise group first."}
     bot.send_reminders(group_id=group_id)
     return {"success": True, "mode": "Live Messages Sent" if payload.live else "Dry Run Simulated"}
 
@@ -250,7 +281,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Splitwise iMessage Bot - Onboarding & Control</title>
+  <title>Splitwise iMessage Bot - Real-Time Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
   <style>
@@ -268,15 +299,15 @@ HTML_CONTENT = """<!DOCTYPE html>
         </div>
         <div>
           <h1 class="font-semibold text-lg leading-tight">Splitwise iMessage Bot</h1>
-          <p class="text-xs text-slate-400">Self-Hosted Mac Onboarding</p>
+          <p class="text-xs text-slate-400">Live Production Dashboard (No Mock Data)</p>
         </div>
       </div>
       <div id="live-badges" class="flex items-center gap-3 text-xs">
         <span id="badge-splitwise" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 flex items-center gap-1.5 border border-slate-700">
-          <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse-slow"></span> Checking Splitwise...
+          <span class="w-2 h-2 rounded-full bg-slate-500"></span> Splitwise: Checking...
         </span>
         <span id="badge-ai" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 flex items-center gap-1.5 border border-slate-700">
-          <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse-slow"></span> Checking AI...
+          <span class="w-2 h-2 rounded-full bg-slate-500"></span> AI: Checking...
         </span>
       </div>
     </div>
@@ -285,13 +316,13 @@ HTML_CONTENT = """<!DOCTYPE html>
   <!-- Main Container -->
   <main class="max-w-6xl mx-auto px-4 py-8 space-y-8">
     
-    <!-- Hero / Quick Status Banner -->
-    <div class="bg-gradient-to-r from-slate-900 via-slate-850 to-slate-900 border border-slate-800 rounded-2xl p-6 relative overflow-hidden shadow-xl">
-      <div class="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+    <!-- Hero Banner -->
+    <div class="bg-gradient-to-r from-slate-900 via-slate-850 to-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+      <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
-          <h2 class="text-2xl font-bold text-white mb-1">Onboard Your Bot in 3 Easy Steps</h2>
+          <h2 class="text-2xl font-bold text-white mb-1">Splitwise Real-Time Control Center</h2>
           <p class="text-slate-400 text-sm max-w-xl">
-            Connect your Splitwise account, configure your minimal-cost AI key, and start automated iMessage reminders with AI-explained simplified debts.
+            Live group sync, custom link connectors for Google Gemini & OpenAI, and real iMessage debt explanations.
           </p>
         </div>
         <div class="flex gap-2">
@@ -305,7 +336,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Onboarding Step Cards -->
+    <!-- 3 Setup Columns -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
 
       <!-- STEP 1: SPLITWISE LOGIN -->
@@ -313,16 +344,16 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div>
           <div class="flex items-center justify-between mb-4">
             <span class="text-xs font-semibold uppercase tracking-wider text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/60">Step 1</span>
-            <div id="sw-status-indicator" class="text-slate-400 text-xs">Unconnected</div>
+            <div id="sw-status-indicator" class="text-slate-400 text-xs font-medium">Not Connected</div>
           </div>
           <h3 class="text-lg font-semibold mb-1 flex items-center gap-2">
             <i data-lucide="wallet" class="w-5 h-5 text-emerald-400"></i> Connect Splitwise
           </h3>
           <p class="text-slate-400 text-xs mb-3">
-            Fastest way: Get your API Key from Splitwise in 30 seconds.
+            Paste your free API Key from Splitwise (100% free, no Pro required).
           </p>
 
-          <!-- Connected Profile Card (Hidden if mock) -->
+          <!-- Connected Profile Card -->
           <div id="sw-profile-card" class="hidden mb-4 p-3 bg-slate-800/80 rounded-xl border border-slate-700 flex items-center gap-3">
             <div id="sw-avatar" class="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold overflow-hidden">
               <i data-lucide="user" class="w-5 h-5"></i>
@@ -336,11 +367,11 @@ HTML_CONTENT = """<!DOCTYPE html>
           <!-- Quick API Key Connect -->
           <div class="space-y-2.5">
             <div class="p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-[11px] text-slate-400 space-y-1">
-              <p class="font-medium text-slate-300">How to get your API Key:</p>
+              <p class="font-medium text-slate-300">How to get your free API Key:</p>
               <ol class="list-decimal list-inside space-y-0.5 text-slate-400">
                 <li>Open <a href="https://secure.splitwise.com/apps/new" target="_blank" class="text-emerald-400 underline font-medium">Splitwise Apps (Click Here)</a></li>
                 <li>Give it any name (e.g. <code class="text-slate-300">My Bot</code>) & submit</li>
-                <li>Copy <strong>Your API Key</strong> from that page</li>
+                <li>Copy <strong>"Your API Key"</strong> on that page</li>
               </ol>
             </div>
 
@@ -350,7 +381,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             </button>
             <p id="sw-api-key-result" class="text-[11px] text-center text-slate-400"></p>
 
-            <!-- Advanced OAuth Accordion -->
+            <!-- Advanced OAuth -->
             <details class="text-xs text-slate-400 pt-2 border-t border-slate-800/80">
               <summary class="cursor-pointer hover:text-slate-300 text-[11px]">Or use Splitwise OAuth (Advanced)</summary>
               <div class="mt-2 space-y-2">
@@ -375,55 +406,86 @@ HTML_CONTENT = """<!DOCTYPE html>
             <i data-lucide="users" class="w-5 h-5 text-blue-400"></i> Select Your Group
           </h3>
           <p class="text-slate-400 text-xs mb-4">
-            Choose the trip or roommate group you want this iMessage bot to monitor and explain.
+            Select a live Splitwise group to monitor and explain.
           </p>
 
           <div class="space-y-3">
             <select id="select-group" onchange="onGroupChanged()" class="w-full text-xs bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-slate-200 focus:outline-none focus:border-blue-500">
-              <option value="">Loading groups...</option>
+              <option value="">Connect Splitwise to view your groups</option>
             </select>
             <div id="active-group-summary" class="p-3 bg-slate-800/50 rounded-xl border border-slate-700/60 text-xs text-slate-300 space-y-1">
-              <p>Active: <strong id="summary-group-name" class="text-white">Tahoe Ski Trip</strong></p>
-              <p>Debtors: <span id="summary-debtors-count" class="text-amber-400 font-medium">3 members</span></p>
+              <p>Active: <strong id="summary-group-name" class="text-white">None selected</strong></p>
+              <p>Debtors: <span id="summary-debtors-count" class="text-slate-400">0 open debts</span></p>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- STEP 3: AI CONFIGURATION -->
+      <!-- STEP 3: CUSTOM CONNECTORS (GOOGLE & OPENAI VIA LINK) -->
       <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between shadow-lg">
         <div>
           <div class="flex items-center justify-between mb-4">
             <span class="text-xs font-semibold uppercase tracking-wider text-purple-400 bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/60">Step 3</span>
-            <div id="ai-status-indicator" class="text-slate-400 text-xs">Ready</div>
+            <div id="ai-status-indicator" class="text-slate-400 text-xs font-medium">Not Connected</div>
           </div>
           <h3 class="text-lg font-semibold mb-1 flex items-center gap-2">
-            <i data-lucide="sparkles" class="w-5 h-5 text-purple-400"></i> AI Model (Minimal Credits)
+            <i data-lucide="sparkles" class="w-5 h-5 text-purple-400"></i> AI Custom Connectors
           </h3>
-          <p class="text-slate-400 text-xs mb-4">
-            Always explains simplified debts. Prompt is token-optimized (&lt;250 tokens, fractions of a cent).
+          <p class="text-slate-400 text-xs mb-3">
+            Authorize Google Gemini or OpenAI directly via 1-click authorization links.
           </p>
 
-          <div class="space-y-3">
-            <div class="grid grid-cols-2 gap-2 text-xs">
-              <button id="btn-provider-openai" onclick="setProvider('openai')" class="py-2 px-3 rounded-lg border border-purple-500 bg-purple-950/40 text-purple-300 font-medium">
-                OpenAI (4o-mini)
-              </button>
-              <button id="btn-provider-gemini" onclick="setProvider('gemini')" class="py-2 px-3 rounded-lg border border-slate-800 bg-slate-950 text-slate-400 font-medium">
-                Gemini Flash
-              </button>
-            </div>
-            <input type="password" id="input-ai-key" placeholder="Enter API Key" class="w-full text-xs bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-purple-500">
-            <div class="flex gap-2">
-              <button onclick="saveAIKey()" class="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 transition">
-                Save Key
-              </button>
-              <button onclick="testAIKey()" class="py-2 px-3 bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium rounded-lg transition flex items-center gap-1">
-                <i data-lucide="zap" class="w-3.5 h-3.5"></i> Test
-              </button>
-            </div>
-            <p id="ai-test-result" class="text-[11px] text-slate-400"></p>
+          <!-- Provider Tabs -->
+          <div class="grid grid-cols-2 gap-2 text-xs mb-3">
+            <button id="btn-provider-gemini" onclick="setProvider('gemini')" class="py-2 px-2.5 rounded-lg border border-purple-500 bg-purple-950/40 text-purple-300 font-medium flex items-center justify-center gap-1.5">
+              <span>Google Gemini</span>
+            </button>
+            <button id="btn-provider-openai" onclick="setProvider('openai')" class="py-2 px-2.5 rounded-lg border border-slate-800 bg-slate-950 text-slate-400 font-medium flex items-center justify-center gap-1.5">
+              <span>OpenAI (4o-mini)</span>
+            </button>
           </div>
+
+          <!-- Google Connector Box -->
+          <div id="connector-gemini-box" class="space-y-2.5">
+            <div class="p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-[11px] text-slate-300 space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="font-medium text-emerald-400 flex items-center gap-1">
+                  <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> Google Gemini 2.5 Flash
+                </span>
+                <span class="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-400">Free Tier</span>
+              </div>
+              <p class="text-slate-400 text-[10px]">Click below to create a Gemini key with 1 click in Google AI Studio:</p>
+              <a href="https://aistudio.google.com/app/apikey" target="_blank" class="w-full py-1.5 bg-purple-600/30 hover:bg-purple-600/40 text-purple-300 border border-purple-500/40 rounded-lg flex items-center justify-center gap-1.5 text-xs font-medium transition">
+                <i data-lucide="external-link" class="w-3.5 h-3.5"></i> 1-Click Authorize with Google
+              </a>
+            </div>
+            <input type="password" id="input-gemini-key" placeholder="Paste Gemini Key (AIza...)" class="w-full text-xs bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-purple-500">
+            <button onclick="saveAndTestAI('gemini')" class="w-full py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-xl transition shadow-md flex items-center justify-center gap-1.5">
+              <i data-lucide="link-2" class="w-4 h-4"></i> Connect Google Gemini
+            </button>
+          </div>
+
+          <!-- OpenAI Connector Box -->
+          <div id="connector-openai-box" class="hidden space-y-2.5">
+            <div class="p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-[11px] text-slate-300 space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="font-medium text-emerald-400 flex items-center gap-1">
+                  <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> OpenAI gpt-4o-mini
+                </span>
+                <span class="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-400">&lt;$0.0001/req</span>
+              </div>
+              <p class="text-slate-400 text-[10px]">Click below to open your OpenAI API Keys dashboard:</p>
+              <a href="https://platform.openai.com/api-keys" target="_blank" class="w-full py-1.5 bg-purple-600/30 hover:bg-purple-600/40 text-purple-300 border border-purple-500/40 rounded-lg flex items-center justify-center gap-1.5 text-xs font-medium transition">
+                <i data-lucide="external-link" class="w-3.5 h-3.5"></i> 1-Click Authorize with OpenAI
+              </a>
+            </div>
+            <input type="password" id="input-openai-key" placeholder="Paste OpenAI Key (sk-...)" class="w-full text-xs bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-purple-500">
+            <button onclick="saveAndTestAI('openai')" class="w-full py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-xl transition shadow-md flex items-center justify-center gap-1.5">
+              <i data-lucide="link-2" class="w-4 h-4"></i> Connect OpenAI
+            </button>
+          </div>
+
+          <p id="ai-test-result" class="text-[11px] text-center text-slate-400 mt-2"></p>
         </div>
       </div>
 
@@ -436,13 +498,12 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg">
         <div class="flex items-center justify-between mb-4">
           <h3 class="text-lg font-semibold flex items-center gap-2">
-            <i data-lucide="arrow-right-left" class="w-5 h-5 text-emerald-400"></i> Simplified Debts
+            <i data-lucide="arrow-right-left" class="w-5 h-5 text-emerald-400"></i> Real Simplified Debts
           </h3>
-          <span class="text-xs text-slate-400">Fewest transactions to settle</span>
+          <span class="text-xs text-slate-400">Direct from Splitwise</span>
         </div>
         <div id="simplified-debts-list" class="space-y-2.5">
-          <!-- Populated by JS -->
-          <p class="text-xs text-slate-500">Loading debts...</p>
+          <p class="text-xs text-slate-500">Connect Splitwise in Step 1 to load active debts.</p>
         </div>
       </div>
 
@@ -452,7 +513,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           <h3 class="text-lg font-semibold flex items-center gap-2">
             <i data-lucide="smartphone" class="w-5 h-5 text-blue-400"></i> macOS & iMessage Status
           </h3>
-          <span class="text-xs text-slate-400">Self-Hosted</span>
+          <span class="text-xs text-slate-400">Self-Hosted Mac</span>
         </div>
 
         <div class="grid grid-cols-2 gap-3 text-xs">
@@ -473,7 +534,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div class="pt-2 border-t border-slate-800">
           <p class="text-xs text-slate-300 font-medium mb-2">Send a Real Test iMessage to Your Phone:</p>
           <div class="flex gap-2">
-            <input type="text" id="test-imessage-recipient" placeholder="Your Phone or Apple ID" class="flex-1 text-xs bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500">
+            <input type="text" id="test-imessage-recipient" placeholder="Your Phone Number or Apple ID" class="flex-1 text-xs bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-blue-500">
             <button onclick="sendTestIMessage()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg transition flex items-center gap-1.5 shadow-md">
               <i data-lucide="send" class="w-3.5 h-3.5"></i> Send
             </button>
@@ -484,14 +545,14 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     </div>
 
-    <!-- Interactive AI Explainer Simulator -->
+    <!-- Live AI Debt Explainer Sandbox -->
     <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg">
       <div class="flex items-center justify-between mb-4">
         <div>
           <h3 class="text-lg font-semibold flex items-center gap-2">
-            <i data-lucide="bot" class="w-5 h-5 text-purple-400"></i> Interactive AI Debt Explainer Sandbox
+            <i data-lucide="bot" class="w-5 h-5 text-purple-400"></i> Live AI Debt Explainer Sandbox
           </h3>
-          <p class="text-xs text-slate-400">Test how the bot explains tricky simplified debts to confused group members.</p>
+          <p class="text-xs text-slate-400">Test how the bot explains tricky simplified debts to your real group members.</p>
         </div>
       </div>
 
@@ -499,15 +560,13 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div>
           <label class="block text-xs text-slate-400 mb-1">Debtor Asking Question:</label>
           <select id="chat-debtor-select" class="w-full text-xs bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-purple-500">
-            <option value="Alex">Alex (Owes $250)</option>
-            <option value="Bob">Bob (Owes $10)</option>
-            <option value="Chloe">Chloe (Owes $90)</option>
+            <option value="">No debtors found (Select a group first)</option>
           </select>
         </div>
         <div class="md:col-span-2">
           <label class="block text-xs text-slate-400 mb-1">Their Confused Question:</label>
           <div class="flex gap-2">
-            <input type="text" id="chat-question-input" value="Why am I paying Sarah $250 when Bob bought the groceries?" class="flex-1 text-xs bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-purple-500">
+            <input type="text" id="chat-question-input" value="Why do I owe this amount and why am I paying this specific person?" class="flex-1 text-xs bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-purple-500">
             <button onclick="askAI()" id="btn-ask-ai" class="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-lg transition flex items-center gap-1.5 shadow-md">
               <i data-lucide="sparkles" class="w-3.5 h-3.5"></i> Ask AI
             </button>
@@ -519,7 +578,7 @@ HTML_CONTENT = """<!DOCTYPE html>
       <div class="p-4 bg-slate-950 rounded-xl border border-slate-800">
         <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Simulated iMessage Reply:</p>
         <div id="ai-response-bubble" class="bg-blue-600 text-white text-xs p-4 rounded-2xl max-w-xl whitespace-pre-line leading-relaxed shadow-lg">
-          Click "Ask AI" to generate an explanation!
+          Connect your Splitwise group and AI key, then click "Ask AI" to generate a live explanation.
         </div>
       </div>
     </div>
@@ -527,7 +586,7 @@ HTML_CONTENT = """<!DOCTYPE html>
   </main>
 
   <script>
-    let currentProvider = 'openai';
+    let currentProvider = 'gemini';
 
     async function loadStatus() {
       try {
@@ -540,14 +599,18 @@ HTML_CONTENT = """<!DOCTYPE html>
         if (data.splitwise.connected) {
           swBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-400"></span> Splitwise: ' + (data.splitwise.user.name || 'Connected');
           swBadge.className = 'px-2.5 py-1 rounded-full bg-emerald-950/60 text-emerald-300 flex items-center gap-1.5 border border-emerald-800/60';
-          swIndicator.innerText = 'Connected';
+          swIndicator.innerText = 'Connected as ' + data.splitwise.user.name;
           swIndicator.className = 'text-emerald-400 text-xs font-medium';
           
           document.getElementById('sw-profile-card').classList.remove('hidden');
           document.getElementById('sw-name').innerText = data.splitwise.user.name;
           document.getElementById('sw-email').innerText = data.splitwise.user.email;
         } else {
-          swBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-amber-400"></span> Splitwise: Demo Mode';
+          swBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-slate-500"></span> Splitwise: Not Connected';
+          swBadge.className = 'px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 flex items-center gap-1.5 border border-slate-700';
+          swIndicator.innerText = 'Not Connected';
+          swIndicator.className = 'text-slate-400 text-xs font-medium';
+          document.getElementById('sw-profile-card').classList.add('hidden');
         }
 
         // AI status
@@ -559,7 +622,10 @@ HTML_CONTENT = """<!DOCTYPE html>
           aiIndicator.innerText = 'Connected (' + data.ai.provider + ')';
           aiIndicator.className = 'text-purple-400 text-xs font-medium';
         } else {
-          aiBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-slate-500"></span> AI: Demo Fallback';
+          aiBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-slate-500"></span> AI: Not Connected';
+          aiBadge.className = 'px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 flex items-center gap-1.5 border border-slate-700';
+          aiIndicator.innerText = 'Not Connected';
+          aiIndicator.className = 'text-slate-400 text-xs font-medium';
         }
 
         // Permissions
@@ -583,6 +649,16 @@ HTML_CONTENT = """<!DOCTYPE html>
         const data = await res.json();
         const select = document.getElementById('select-group');
         select.innerHTML = '';
+        
+        if (!data.groups || data.groups.length === 0) {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.innerText = 'No groups found (Connect Splitwise first)';
+          select.appendChild(opt);
+          document.getElementById('group-count').innerText = '0 Groups';
+          return;
+        }
+
         data.groups.forEach(g => {
           const opt = document.createElement('option');
           opt.value = g.id;
@@ -600,33 +676,47 @@ HTML_CONTENT = """<!DOCTYPE html>
       try {
         const res = await fetch('/api/group/details');
         const data = await res.json();
-        document.getElementById('summary-group-name').innerText = data.group_name;
-        document.getElementById('summary-debtors-count').innerText = data.simplified_debts.length + ' debts';
+        
+        document.getElementById('summary-group-name').innerText = data.group_name || 'None selected';
+        const debts = data.simplified_debts || [];
+        document.getElementById('summary-debtors-count').innerText = debts.length + ' open debts';
 
         const debtsList = document.getElementById('simplified-debts-list');
         debtsList.innerHTML = '';
-        data.simplified_debts.forEach(d => {
-          const div = document.createElement('div');
-          div.className = 'p-3 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between text-xs';
-          div.innerHTML = `
-            <div class="flex items-center gap-2">
-              <span class="font-semibold text-slate-200">${d.from_name}</span>
-              <i data-lucide="arrow-right" class="w-3.5 h-3.5 text-slate-500"></i>
-              <span class="font-semibold text-emerald-400">${d.to_name}</span>
-            </div>
-            <span class="font-mono font-bold text-amber-400">$${d.amount.toFixed(2)}</span>
-          `;
-          debtsList.appendChild(div);
-        });
+        
+        if (debts.length === 0) {
+          debtsList.innerHTML = '<p class="text-xs text-slate-500">No open debts found in this group! All settled.</p>';
+        } else {
+          debts.forEach(d => {
+            const div = document.createElement('div');
+            div.className = 'p-3 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between text-xs';
+            div.innerHTML = `
+              <div class="flex items-center gap-2">
+                <span class="font-semibold text-slate-200">${d.from_name}</span>
+                <i data-lucide="arrow-right" class="w-3.5 h-3.5 text-slate-500"></i>
+                <span class="font-semibold text-emerald-400">${d.to_name}</span>
+              </div>
+              <span class="font-mono font-bold text-amber-400">$${d.amount.toFixed(2)}</span>
+            `;
+            debtsList.appendChild(div);
+          });
+        }
 
         const debtorSelect = document.getElementById('chat-debtor-select');
         debtorSelect.innerHTML = '';
-        data.simplified_debts.forEach(d => {
+        if (debts.length === 0) {
           const opt = document.createElement('option');
-          opt.value = d.from_name;
-          opt.innerText = `${d.from_name} (Owes $${d.amount.toFixed(2)} to ${d.to_name})`;
+          opt.value = '';
+          opt.innerText = 'No debtors with open balances in this group';
           debtorSelect.appendChild(opt);
-        });
+        } else {
+          debts.forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d.from_name;
+            opt.innerText = `${d.from_name} (Owes $${d.amount.toFixed(2)} to ${d.to_name})`;
+            debtorSelect.appendChild(opt);
+          });
+        }
 
         lucide.createIcons();
       } catch (e) {
@@ -636,6 +726,7 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     async function onGroupChanged() {
       const gid = document.getElementById('select-group').value;
+      if (!gid) return;
       await fetch('/api/config/group', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -646,41 +737,48 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     function setProvider(p) {
       currentProvider = p;
-      if (p === 'openai') {
-        document.getElementById('btn-provider-openai').className = 'py-2 px-3 rounded-lg border border-purple-500 bg-purple-950/40 text-purple-300 font-medium';
-        document.getElementById('btn-provider-gemini').className = 'py-2 px-3 rounded-lg border border-slate-800 bg-slate-950 text-slate-400 font-medium';
+      if (p === 'gemini') {
+        document.getElementById('btn-provider-gemini').className = 'py-2 px-2.5 rounded-lg border border-purple-500 bg-purple-950/40 text-purple-300 font-medium flex items-center justify-center gap-1.5';
+        document.getElementById('btn-provider-openai').className = 'py-2 px-2.5 rounded-lg border border-slate-800 bg-slate-950 text-slate-400 font-medium flex items-center justify-center gap-1.5';
+        document.getElementById('connector-gemini-box').classList.remove('hidden');
+        document.getElementById('connector-openai-box').classList.add('hidden');
       } else {
-        document.getElementById('btn-provider-gemini').className = 'py-2 px-3 rounded-lg border border-purple-500 bg-purple-950/40 text-purple-300 font-medium';
-        document.getElementById('btn-provider-openai').className = 'py-2 px-3 rounded-lg border border-slate-800 bg-slate-950 text-slate-400 font-medium';
+        document.getElementById('btn-provider-openai').className = 'py-2 px-2.5 rounded-lg border border-purple-500 bg-purple-950/40 text-purple-300 font-medium flex items-center justify-center gap-1.5';
+        document.getElementById('btn-provider-gemini').className = 'py-2 px-2.5 rounded-lg border border-slate-800 bg-slate-950 text-slate-400 font-medium flex items-center justify-center gap-1.5';
+        document.getElementById('connector-openai-box').classList.remove('hidden');
+        document.getElementById('connector-gemini-box').classList.add('hidden');
       }
     }
 
-    async function saveAIKey() {
-      const key = document.getElementById('input-ai-key').value.trim();
-      if (!key) return alert('Please enter an API key');
-      const res = await fetch('/api/config/ai', {
+    async function saveAndTestAI(provider) {
+      const inputId = provider === 'gemini' ? 'input-gemini-key' : 'input-openai-key';
+      const key = document.getElementById(inputId).value.trim();
+      const el = document.getElementById('ai-test-result');
+
+      if (!key) return alert('Please enter your ' + provider.toUpperCase() + ' API key.');
+
+      el.innerText = 'Connecting and verifying key with ' + provider.toUpperCase() + '...';
+      el.className = 'text-[11px] text-center text-slate-400 mt-2';
+
+      // 1. Save
+      const resSave = await fetch('/api/config/ai', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({provider: currentProvider, api_key: key})
+        body: JSON.stringify({provider: provider, api_key: key})
       });
-      const data = await res.json();
-      if (data.success) {
-        alert('AI Key saved!');
-        loadStatus();
-      }
-    }
+      const dataSave = await resSave.json();
 
-    async function testAIKey() {
-      const el = document.getElementById('ai-test-result');
-      el.innerText = 'Testing AI connection...';
-      const res = await fetch('/api/test/ai', {method: 'POST'});
-      const data = await res.json();
-      if (data.success) {
-        el.className = 'text-[11px] text-emerald-400 mt-1';
-        el.innerText = '✓ Success: ' + data.reply;
+      // 2. Test
+      const resTest = await fetch('/api/test/ai', {method: 'POST'});
+      const dataTest = await resTest.json();
+
+      if (dataTest.success) {
+        el.className = 'text-[11px] text-center text-emerald-400 mt-2 font-medium';
+        el.innerText = '✓ Success: Connected to ' + provider.toUpperCase() + ' (' + dataTest.reply + ')';
+        loadStatus();
       } else {
-        el.className = 'text-[11px] text-red-400 mt-1';
-        el.innerText = '✗ Error: ' + (data.error || 'Connection failed');
+        el.className = 'text-[11px] text-center text-red-400 mt-2';
+        el.innerText = '✗ Error: ' + (dataTest.error || 'Connection failed');
       }
     }
 
@@ -693,10 +791,12 @@ HTML_CONTENT = """<!DOCTYPE html>
         body: JSON.stringify({api_key: key})
       });
       const data = await res.json();
-      if (data.success) {
-        alert('Splitwise API Key saved!');
+      if (data.success && data.profile && data.profile.connected) {
+        alert('Splitwise Connected! Welcome ' + data.profile.name);
         loadStatus();
         loadGroups();
+      } else {
+        alert('Could not verify API Key. Please ensure it is active on secure.splitwise.com/apps.');
       }
     }
 
@@ -738,9 +838,10 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     async function askAI() {
       const debtor = document.getElementById('chat-debtor-select').value;
+      if (!debtor) return alert('Please select a debtor from the dropdown first.');
       const question = document.getElementById('chat-question-input').value;
       const bubble = document.getElementById('ai-response-bubble');
-      bubble.innerText = 'Thinking and analyzing Simplified Debts graph...';
+      bubble.innerText = 'Querying AI and calculating Simplified Debts graph...';
       
       const res = await fetch('/api/ai/ask', {
         method: 'POST',
@@ -763,7 +864,11 @@ HTML_CONTENT = """<!DOCTYPE html>
         body: JSON.stringify({live: live})
       });
       const data = await res.json();
-      alert('Reminders triggered: ' + data.mode);
+      if (data.success) {
+        alert('Reminders dispatched: ' + data.mode);
+      } else {
+        alert('Error: ' + data.error);
+      }
     }
 
     // Init

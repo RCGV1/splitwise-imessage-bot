@@ -1,7 +1,7 @@
 """
 Splitwise client wrapper for fetching group details, member balances,
 itemized expenses, simplified debts graph, and OAuth web onboarding.
-Includes mock fallback data for immediate demoing.
+Uses purely real Splitwise API data.
 """
 
 from typing import Dict, List, Optional, Any, Tuple
@@ -11,7 +11,6 @@ import config
 class SplitwiseClient:
     def __init__(self):
         self.s = None
-        self.is_mock = True
         self._init_client()
 
     def _init_client(self):
@@ -32,14 +31,15 @@ class SplitwiseClient:
                         "token_type": "bearer"
                     }
                     self.s.setOAuth2AccessToken(token_dict)
-                self.is_mock = False
             except Exception as e:
                 print(f"Error initializing Splitwise client: {e}")
                 self.s = None
-                self.is_mock = True
         else:
             self.s = None
-            self.is_mock = True
+
+    def is_connected(self) -> bool:
+        """Returns True if authenticated with Splitwise."""
+        return self.s is not None
 
     def get_oauth_url(self, redirect_uri: str) -> Tuple[Optional[str], Optional[str]]:
         """Generates Splitwise OAuth2 authorize URL."""
@@ -69,13 +69,13 @@ class SplitwiseClient:
 
     def get_current_user_profile(self) -> Dict[str, Any]:
         """Returns authenticated user's profile info."""
-        if self.is_mock or not self.s:
+        if not self.s:
             return {
-                "id": 999,
-                "name": "Demo Host",
-                "email": "demo@example.com",
-                "avatar": "https://s3.amazonaws.com/splitwise/uploads/user/avatar/999/medium_avatar.png",
-                "is_mock": True
+                "id": 0,
+                "name": "",
+                "email": "",
+                "avatar": "",
+                "connected": False
             }
         try:
             u = self.s.getCurrentUser()
@@ -87,39 +87,48 @@ class SplitwiseClient:
                 "name": full_name or "Splitwise User",
                 "email": u.getEmail() or "",
                 "avatar": avatar_url,
-                "is_mock": False
+                "connected": True
             }
         except Exception as e:
             print(f"Error fetching current user: {e}")
             return {
                 "id": 0,
-                "name": "Connected User",
+                "name": "",
                 "email": "",
                 "avatar": "",
-                "is_mock": False
+                "connected": False,
+                "error": str(e)
             }
 
     def get_groups(self) -> List[Dict[str, Any]]:
-        """List groups with their IDs and names."""
-        if self.is_mock or not self.s:
-            return [{"id": 101, "name": "Tahoe Ski Trip (Demo Group)"}]
+        """List groups with their IDs and names from real Splitwise account."""
+        if not self.s:
+            return []
         
         try:
             groups = self.s.getGroups()
             return [{"id": g.getId(), "name": g.getName()} for g in groups]
         except Exception as e:
             print(f"Error retrieving groups: {e}")
-            return [{"id": 101, "name": "Tahoe Ski Trip (Demo Group)"}]
+            return []
 
     def get_group_details(self, group_id: int) -> Dict[str, Any]:
-        """Fetch group members, balances, simplified debts, and expenses."""
-        if self.is_mock or not self.s or group_id == 101 or group_id == 0:
-            return self._get_mock_group_details()
+        """Fetch real group members, balances, simplified debts, and expenses."""
+        empty_group = {
+            "group_id": group_id,
+            "group_name": "No Group Selected",
+            "members": {},
+            "simplified_debts": [],
+            "expenses": []
+        }
+
+        if not self.s or not group_id:
+            return empty_group
 
         try:
             group = self.s.getGroup(group_id)
             if not group:
-                return self._get_mock_group_details()
+                return empty_group
 
             members_map = {}
             for member in group.getMembers():
@@ -140,8 +149,8 @@ class SplitwiseClient:
 
             simplified_debts = []
             for debt in group.getSimplifiedDebts():
-                from_id = debt.getFrom()
-                to_id = debt.getTo()
+                from_id = debt.getFromUser() if hasattr(debt, "getFromUser") else debt.getFrom()
+                to_id = debt.getToUser() if hasattr(debt, "getToUser") else debt.getTo()
                 from_name = members_map.get(from_id, {}).get("name", f"User {from_id}")
                 to_name = members_map.get(to_id, {}).get("name", f"User {to_id}")
                 simplified_debts.append({
@@ -189,15 +198,18 @@ class SplitwiseClient:
             }
         except Exception as e:
             print(f"Error fetching group {group_id}: {e}")
-            return self._get_mock_group_details()
+            return empty_group
 
     def get_user_debt_context(self, group_id: int, user_query: str) -> Optional[Dict[str, Any]]:
         """
-        Finds a user by phone or name in the group and produces a clean,
+        Finds a user by phone or name in the real group and produces a clean,
         compact summary context specifically tailored for AI debt explanation.
         """
         data = self.get_group_details(group_id)
         members = data["members"]
+
+        if not members:
+            return None
 
         target_member = None
         cleaned_query = user_query.strip().lower().replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
@@ -260,79 +272,4 @@ class SplitwiseClient:
                 f"{d['from_name']} pays {d['to_name']} ${d['amount']:.2f}"
                 for d in data["simplified_debts"]
             ]
-        }
-
-    def _get_mock_group_details(self) -> Dict[str, Any]:
-        """Realistic mock group demonstrating a confusing simplified-debt scenario."""
-        members = {
-            1: {"id": 1, "name": "Alex", "phone": "+14085551234", "email": "alex@example.com", "net_balance": -250.00},
-            2: {"id": 2, "name": "Sarah", "phone": "+14085552345", "email": "sarah@example.com", "net_balance": 350.00},
-            3: {"id": 3, "name": "Bob", "phone": "+14085553456", "email": "bob@example.com", "net_balance": -10.00},
-            4: {"id": 4, "name": "Chloe", "phone": "+14085554567", "email": "chloe@example.com", "net_balance": -90.00}
-        }
-        
-        simplified_debts = [
-            {"from_id": 1, "from_name": "Alex", "to_id": 2, "to_name": "Sarah", "amount": 250.00, "currency": "USD"},
-            {"from_id": 3, "from_name": "Bob", "to_id": 2, "to_name": "Sarah", "amount": 10.00, "currency": "USD"},
-            {"from_id": 4, "from_name": "Chloe", "to_id": 2, "to_name": "Sarah", "amount": 90.00, "currency": "USD"}
-        ]
-
-        expenses = [
-            {
-                "id": 1001,
-                "description": "Airbnb Cabin Rental",
-                "cost": 400.00,
-                "date": "2026-09-12",
-                "paid_by": [{"user_id": 2, "name": "Sarah", "paid": 400.00}],
-                "shares": [
-                    {"user_id": 1, "name": "Alex", "owed": 100.00},
-                    {"user_id": 2, "name": "Sarah", "owed": 100.00},
-                    {"user_id": 3, "name": "Bob", "owed": 100.00},
-                    {"user_id": 4, "name": "Chloe", "owed": 100.00}
-                ]
-            },
-            {
-                "id": 1002,
-                "description": "Costco Groceries & Snacks",
-                "cost": 120.00,
-                "date": "2026-09-13",
-                "paid_by": [{"user_id": 3, "name": "Bob", "paid": 120.00}],
-                "shares": [
-                    {"user_id": 1, "name": "Alex", "owed": 30.00},
-                    {"user_id": 2, "name": "Sarah", "owed": 30.00},
-                    {"user_id": 3, "name": "Bob", "owed": 30.00},
-                    {"user_id": 4, "name": "Chloe", "owed": 30.00}
-                ]
-            },
-            {
-                "id": 1003,
-                "description": "Gas & Bridge Tolls",
-                "cost": 60.00,
-                "date": "2026-09-13",
-                "paid_by": [{"user_id": 4, "name": "Chloe", "paid": 60.00}],
-                "shares": [
-                    {"user_id": 1, "name": "Alex", "owed": 20.00},
-                    {"user_id": 2, "name": "Sarah", "owed": 20.00},
-                    {"user_id": 4, "name": "Chloe", "owed": 20.00}
-                ]
-            },
-            {
-                "id": 1004,
-                "description": "Ski Pass / Lift Tickets",
-                "cost": 200.00,
-                "date": "2026-09-14",
-                "paid_by": [{"user_id": 2, "name": "Sarah", "paid": 200.00}],
-                "shares": [
-                    {"user_id": 1, "name": "Alex", "owed": 100.00},
-                    {"user_id": 2, "name": "Sarah", "owed": 100.00}
-                ]
-            }
-        ]
-
-        return {
-            "group_id": 101,
-            "group_name": "Tahoe Ski Trip (Demo)",
-            "members": members,
-            "simplified_debts": simplified_debts,
-            "expenses": expenses
         }

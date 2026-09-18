@@ -64,10 +64,6 @@ class SplitwiseBot:
         
         # Match sender with Splitwise group member
         context = self.sw.get_user_debt_context(self.group_id, sender)
-        
-        # If phone search didn't match directly, try finding the first debtor in mock mode
-        if not context and self.sw.is_mock:
-            context = self.sw.get_user_debt_context(self.group_id, "Alex")
 
         if not context:
             reply = (
