@@ -239,6 +239,16 @@ def test_ai_connection():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.post("/api/open/full-disk-access")
+def open_full_disk_access_helper():
+    import subprocess
+    # 1. Open System Settings to Full Disk Access
+    subprocess.run(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"])
+    # 2. Reveal Antigravity.app in Finder so user can drag and drop it
+    if os.path.exists("/Applications/Antigravity.app"):
+        subprocess.run(["open", "-R", "/Applications/Antigravity.app"])
+    return {"success": True}
+
 @app.post("/api/test/imessage")
 def test_imessage(payload: TestIMessageRequest):
     bridge = IMessageBridge(dry_run=False)
@@ -536,6 +546,22 @@ HTML_CONTENT = """<!DOCTYPE html>
               <i data-lucide="alert-circle" class="w-4 h-4"></i> Inbound Listener
             </div>
           </div>
+        </div>
+
+        <!-- 1-Click FDA Helper -->
+        <div class="p-3 bg-purple-950/30 border border-purple-800/50 rounded-xl text-xs space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-medium text-purple-300 flex items-center gap-1">
+              <i data-lucide="shield" class="w-3.5 h-3.5 text-purple-400"></i> Easy Full Disk Access Setup
+            </span>
+            <button onclick="openFullDiskAccessHelper()" class="py-1 px-2.5 bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-lg transition text-[11px] flex items-center gap-1 shadow">
+              <i data-lucide="external-link" class="w-3.5 h-3.5"></i> Open Settings & Reveal App
+            </button>
+          </div>
+          <p class="text-[11px] text-slate-400 leading-tight">
+            Click above to open <strong>System Settings</strong> and reveal <strong>Antigravity</strong> in Finder. Then just <strong>drag and drop</strong> the highlighted Antigravity app icon into the Settings list!
+          </p>
+          <p id="fda-helper-feedback" class="text-[11px] text-emerald-400 hidden font-medium"></p>
         </div>
 
         <div class="pt-2 border-t border-slate-800">
@@ -876,6 +902,14 @@ HTML_CONTENT = """<!DOCTYPE html>
       } else {
         alert('Error: ' + data.error);
       }
+    }
+
+    async function openFullDiskAccessHelper() {
+      const fb = document.getElementById('fda-helper-feedback');
+      fb.classList.remove('hidden');
+      fb.innerText = 'Opened System Settings & Finder! Drag the highlighted Antigravity icon into the Full Disk Access list.';
+      await fetch('/api/open/full-disk-access', {method: 'POST'});
+      setTimeout(() => { loadStatus(); }, 4000);
     }
 
     // Init
