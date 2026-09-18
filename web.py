@@ -9,6 +9,8 @@ Web Onboarding and Management Dashboard for Splitwise iMessage Bot.
 """
 
 import os
+import subprocess
+from pathlib import Path
 from typing import Optional
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -295,8 +297,24 @@ def trigger_reminders(payload: TriggerRemindRequest):
     group_id = config.SPLITWISE_GROUP_ID
     if not group_id:
         return {"success": False, "error": "Please select a Splitwise group first."}
-    bot.send_reminders(group_id=group_id)
+    bot.send_reminders(group_id=group_id, force=payload.live)
     return {"success": True, "mode": "Live Messages Sent" if payload.live else "Dry Run Simulated"}
+
+@app.get("/api/schedule/status")
+def get_schedule_status():
+    plist = Path.home() / "Library/LaunchAgents/com.splitwise.imessagebot.plist"
+    return {"active": plist.exists(), "frequency": "Sundays at 6:00 PM"}
+
+@app.post("/api/schedule/toggle")
+def toggle_schedule(payload: dict):
+    enable = payload.get("enable", True)
+    script_dir = Path(__file__).resolve().parent / "scripts"
+    cmd = [str(script_dir / ("enable_sunday_schedule.sh" if enable else "disable_schedule.sh"))]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return {"success": True, "active": enable, "output": res.stdout}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 # ---------------------------------------------------------------------------
 # Single Page Dashboard UI

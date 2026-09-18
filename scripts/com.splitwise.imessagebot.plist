@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.splitwise.imessagebot</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/benjaminfaershtein/Documents/caltopo-track-playback/Splitwise Bot/.venv/bin/python</string>
+        <string>/Users/benjaminfaershtein/Documents/caltopo-track-playback/Splitwise Bot/bot.py</string>
+        <string>--remind</string>
+        <string>--live</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>18</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/benjaminfaershtein/Documents/caltopo-track-playback/Splitwise Bot</string>
+    <key>StandardOutPath</key>
+    <string>/Users/benjaminfaershtein/Documents/caltopo-track-playback/Splitwise Bot/logs/scheduler.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/benjaminfaershtein/Documents/caltopo-track-playback/Splitwise Bot/logs/scheduler_error.log</string>
+</dict>
+</plist>

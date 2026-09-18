@@ -22,9 +22,30 @@ class IMessageBridge:
         # Timestamp offset for Apple's Cocoa epoch (Jan 1, 2001) in nanoseconds
         # 1 Cocoa second = 1,000,000,000 nanoseconds.
         # Unix epoch to Cocoa epoch is 978307200 seconds.
-        self.last_checked_date = self._get_current_cocoa_timestamp()
+        self.last_checked_date = self._init_last_checked_date()
+        self.seen_message_guids: Set[str] = set()
         self.sent_bot_guids: Set[str] = set()
         self._load_sent_guids()
+
+    def _init_last_checked_date(self) -> int:
+        """
+        Initializes last_checked_date strictly to the latest message in chat.db
+        or current timestamp, GUARANTEEING the bot never reads any past messages.
+        """
+        calc_now = self._get_current_cocoa_timestamp()
+        if not CHAT_DB_PATH.exists():
+            return calc_now
+        try:
+            conn = sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True)
+            cursor = conn.cursor()
+            cursor.execute("SELECT MAX(date) FROM message;")
+            row = cursor.fetchone()
+            conn.close()
+            if row and row[0]:
+                return max(int(row[0]), calc_now)
+        except Exception:
+            pass
+        return calc_now
 
     def _load_sent_guids(self):
         """Loads known sent bot message GUIDs from disk."""
@@ -214,6 +235,11 @@ class IMessageBridge:
                 row_id, guid, date, text, sender, is_from_me, reply_to_guid, thread_originator_guid = row
                 if date > self.last_checked_date:
                     self.last_checked_date = date
+
+                if guid and guid in self.seen_message_guids:
+                    continue
+                if guid:
+                    self.seen_message_guids.add(guid)
 
                 is_reply = bool(
                     (reply_to_guid and reply_to_guid in self.sent_bot_guids) or

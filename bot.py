@@ -7,13 +7,17 @@ Main Splitwise iMessage Bot Orchestrator.
 
 import sys
 import time
+import json
 import argparse
-from typing import Optional, Dict, Any
+from pathlib import Path
+from typing import Optional, Dict, Any, List
 
 import config
 from splitwise_client import SplitwiseClient
 from ai_explainer import AIExplainer
 from imessage import IMessageBridge
+
+REMINDER_STATE_FILE = Path(__file__).resolve().parent / "last_reminded.json"
 
 class SplitwiseBot:
     def __init__(self, dry_run: bool = config.DRY_RUN):
@@ -24,8 +28,10 @@ class SplitwiseBot:
         self.group_id = config.SPLITWISE_GROUP_ID
         # Tracks active reminder sessions: phone -> {"name": ..., "timestamp": ...}
         self.active_reminder_sessions: Dict[str, Dict[str, Any]] = {}
+        # Rate-limiting tracking: phone -> [timestamps of replies]
+        self.reply_history: Dict[str, List[float]] = {}
 
-    def send_reminders(self, group_id: Optional[int] = None):
+    def send_reminders(self, group_id: Optional[int] = None, force: bool = False):
         """Checks for all members with unpaid balances and sends reminders WITH an AI explanation."""
         target_group_id = group_id or self.group_id
         if not target_group_id:
@@ -35,6 +41,25 @@ class SplitwiseBot:
         print(f"\n[Bot] Checking balances for group ID: {target_group_id}...")
         group_data = self.sw.get_group_details(target_group_id)
         group_name = group_data["group_name"]
+
+        # Anti-spam safeguard: Prevent sending live reminders more than once per 24 hours
+        if not self.dry_run and not force:
+            if REMINDER_STATE_FILE.exists():
+                try:
+                    with open(REMINDER_STATE_FILE, "r") as f:
+                        state = json.load(f)
+                    last_time = state.get(str(target_group_id), 0)
+                    elapsed = time.time() - last_time
+                    if elapsed < 86400: # 24 hours
+                        hrs_left = (86400 - elapsed) / 3600
+                        print(f"\n🛡️ [Anti-Spam Safeguard Active]")
+                        print(f"Live reminders for '{group_name}' were already sent {elapsed/3600:.1f} hours ago.")
+                        print(f"Cooldown active for {hrs_left:.1f} more hours to prevent duplicate messages.")
+                        print("To override this safeguard and send anyway, pass --force (or click Send again in web).")
+                        return
+                except Exception:
+                    pass
+
         simplify_debts_enabled = group_data.get("simplify_debts_enabled", True)
         active_debts = group_data.get("active_debts") or group_data.get("simplified_debts") or group_data.get("original_debts") or []
 
@@ -147,9 +172,36 @@ class SplitwiseBot:
                 "is_creditor": True
             }
 
+        # Record live reminder timestamp to prevent accidental duplicate dispatch
+        if not self.dry_run:
+            try:
+                state = {}
+                if REMINDER_STATE_FILE.exists():
+                    with open(REMINDER_STATE_FILE, "r") as f:
+                        state = json.load(f)
+                state[str(target_group_id)] = time.time()
+                with open(REMINDER_STATE_FILE, "w") as f:
+                    json.dump(state, f, indent=2)
+            except Exception as e:
+                print(f"Notice: Could not save reminder state: {e}")
+
     def handle_incoming_question(self, sender: str, question_text: str):
-        """Processes an incoming iMessage question using the AI Explainer."""
+        """Processes an incoming iMessage question using the AI Explainer with rate limiting."""
         print(f"\n[Inbound iMessage] From: {sender} | Question: {question_text}")
+
+        # Rate limiting safeguard: prevent rapid-fire or looping replies
+        clean_sender = "".join(c for c in sender if c.isdigit())
+        now = time.time()
+        history = self.reply_history.get(clean_sender, [])
+        history = [t for t in history if now - t < 300] # within 5 minutes
+        if len(history) >= 5:
+            print(f"[Anti-Spam] Sender {sender} reached rate limit (5 replies / 5 min). Throttling.")
+            return
+        if history and (now - history[-1] < 3):
+            print(f"[Anti-Spam] Ignoring rapid duplicate text from {sender}.")
+            return
+        history.append(now)
+        self.reply_history[clean_sender] = history
         
         target_group_id = self.group_id or config.SPLITWISE_GROUP_ID
         context = self.sw.get_user_debt_context(target_group_id, sender)
@@ -237,13 +289,14 @@ if __name__ == "__main__":
     parser.add_argument("--remind", action="store_true", help="Send automated reminders to all debtors (Dry Run)")
     parser.add_argument("--listen", action="store_true", help="Start continuous incoming iMessage listener")
     parser.add_argument("--live", action="store_true", help="Disable dry-run and send real iMessages")
+    parser.add_argument("--force", action="store_true", help="Bypass 24-hour reminder cooldown")
     args = parser.parse_args()
 
     dry_run = not args.live
     bot = SplitwiseBot(dry_run=dry_run)
 
     if args.remind:
-        bot.send_reminders()
+        bot.send_reminders(force=args.force)
     elif args.listen:
         bot.run_listener_loop()
     else:
