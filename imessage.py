@@ -5,14 +5,16 @@ macOS iMessage integration module.
 - Supports dry-run mode for safe testing.
 """
 
+import json
 import os
 import sqlite3
 import subprocess
 import time
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Set
 
 CHAT_DB_PATH = Path.home() / "Library/Messages/chat.db"
+BOT_MESSAGES_FILE = Path(__file__).resolve().parent / "sent_bot_messages.json"
 
 class IMessageBridge:
     def __init__(self, dry_run: bool = False):
@@ -21,6 +23,53 @@ class IMessageBridge:
         # 1 Cocoa second = 1,000,000,000 nanoseconds.
         # Unix epoch to Cocoa epoch is 978307200 seconds.
         self.last_checked_date = self._get_current_cocoa_timestamp()
+        self.sent_bot_guids: Set[str] = set()
+        self._load_sent_guids()
+
+    def _load_sent_guids(self):
+        """Loads known sent bot message GUIDs from disk."""
+        if BOT_MESSAGES_FILE.exists():
+            try:
+                with open(BOT_MESSAGES_FILE, "r") as f:
+                    self.sent_bot_guids = set(json.load(f))
+            except Exception as e:
+                print(f"Notice: Could not load {BOT_MESSAGES_FILE}: {e}")
+                self.sent_bot_guids = set()
+
+    def _save_sent_guids(self):
+        """Persists known sent bot message GUIDs to disk."""
+        try:
+            with open(BOT_MESSAGES_FILE, "w") as f:
+                json.dump(list(self.sent_bot_guids), f, indent=2)
+        except Exception as e:
+            print(f"Notice: Could not save {BOT_MESSAGES_FILE}: {e}")
+
+    def record_bot_guid(self, guid: str):
+        """Records a message GUID as having been sent by the bot."""
+        if guid:
+            self.sent_bot_guids.add(guid)
+            self._save_sent_guids()
+
+    def _fetch_and_record_latest_sent_guid(self):
+        """Finds the most recently sent message in chat.db and records its GUID."""
+        if not CHAT_DB_PATH.exists():
+            return None
+        try:
+            conn = sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT guid FROM message 
+                WHERE is_from_me = 1 
+                ORDER BY date DESC LIMIT 1;
+            """)
+            row = cursor.fetchone()
+            conn.close()
+            if row and row[0]:
+                self.record_bot_guid(row[0])
+                return row[0]
+        except Exception:
+            pass
+        return None
 
     @staticmethod
     def _get_current_cocoa_timestamp() -> int:
@@ -43,6 +92,8 @@ class IMessageBridge:
             print("-" * 50)
             print(message)
             print("-" * 50)
+            mock_guid = f"dryrun-bot-{int(time.time()*1000)}"
+            self.record_bot_guid(mock_guid)
             return True
 
         # Clean string for AppleScript
@@ -78,6 +129,9 @@ class IMessageBridge:
                 text=True,
                 check=True
             )
+            # Give macOS Messages a brief moment to write the message to chat.db
+            time.sleep(0.5)
+            self._fetch_and_record_latest_sent_guid()
             return True
         except subprocess.CalledProcessError as e:
             print(f"Failed to send iMessage to {clean_recipient}: {e.stderr.strip()}")
@@ -123,7 +177,8 @@ class IMessageBridge:
     def get_new_messages(self) -> List[Dict[str, Any]]:
         """
         Polls for newly arrived incoming messages.
-        Requires Full Disk Access.
+        Includes thread reply metadata (reply_to_guid and thread_originator_guid).
+        Filters out tapback reactions. Requires Full Disk Access.
         """
         if not CHAT_DB_PATH.exists():
             return []
@@ -135,13 +190,19 @@ class IMessageBridge:
             query = """
             SELECT 
                 m.ROWID,
+                m.guid,
                 m.date,
                 m.text,
                 h.id AS sender_handle,
-                m.is_from_me
+                m.is_from_me,
+                m.reply_to_guid,
+                m.thread_originator_guid
             FROM message m
             LEFT JOIN handle h ON m.handle_id = h.ROWID
-            WHERE m.date > ? AND m.is_from_me = 0 AND m.text IS NOT NULL
+            WHERE m.date > ? 
+              AND m.is_from_me = 0 
+              AND m.text IS NOT NULL
+              AND (m.associated_message_type IS NULL OR m.associated_message_type = 0)
             ORDER BY m.date ASC;
             """
 
@@ -150,15 +211,25 @@ class IMessageBridge:
 
             new_msgs = []
             for row in rows:
-                row_id, date, text, sender, is_from_me = row
+                row_id, guid, date, text, sender, is_from_me, reply_to_guid, thread_originator_guid = row
                 if date > self.last_checked_date:
                     self.last_checked_date = date
+
+                is_reply = bool(
+                    (reply_to_guid and reply_to_guid in self.sent_bot_guids) or
+                    (thread_originator_guid and thread_originator_guid in self.sent_bot_guids)
+                )
+
                 new_msgs.append({
                     "id": row_id,
+                    "guid": guid,
                     "date": date,
                     "text": text,
                     "sender": sender or "Unknown",
-                    "is_from_me": bool(is_from_me)
+                    "is_from_me": bool(is_from_me),
+                    "reply_to_guid": reply_to_guid,
+                    "thread_originator_guid": thread_originator_guid,
+                    "is_thread_reply": is_reply
                 })
 
             conn.close()

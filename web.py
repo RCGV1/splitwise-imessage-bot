@@ -194,9 +194,10 @@ def select_group(payload: GroupSelectRequest):
     return {"success": True, "group": details}
 
 @app.get("/api/group/details")
-def get_active_group_details():
-    group_id = config.SPLITWISE_GROUP_ID
-    return sw_client.get_group_details(group_id)
+def get_active_group_details(group_id: Optional[int] = None):
+    config.reload_env()
+    gid = group_id or config.SPLITWISE_GROUP_ID
+    return sw_client.get_group_details(gid)
 
 @app.post("/api/config/ai")
 def save_ai_config(payload: AIConfigRequest):
@@ -522,15 +523,28 @@ HTML_CONTENT = """<!DOCTYPE html>
     <!-- Live Group Debts & iMessage Testing Section -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
-      <!-- LEFT: Live Simplified Debts Table -->
+      <!-- LEFT: Live Group Debts Table (Simplified + Direct) -->
       <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg">
-        <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center justify-between mb-3">
           <h3 class="text-lg font-semibold flex items-center gap-2">
-            <i data-lucide="arrow-right-left" class="w-5 h-5 text-emerald-400"></i> Real Simplified Debts
+            <i data-lucide="arrow-right-left" class="w-5 h-5 text-emerald-400"></i> Group Debts
           </h3>
-          <span class="text-xs text-slate-400">Direct from Splitwise</span>
+          <span id="badge-simplify-mode" class="text-[11px] px-2 py-0.5 rounded font-medium bg-emerald-950/80 text-emerald-300 border border-emerald-800/80">Simplify Debts: ON</span>
         </div>
-        <div id="simplified-debts-list" class="space-y-2.5">
+
+        <!-- Debts Mode Toggle Tabs -->
+        <div class="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 mb-3 text-xs">
+          <button id="tab-debts-simplified" onclick="setDebtsTab('simplified')" class="flex-1 py-1 px-2.5 rounded-lg bg-emerald-600/30 text-emerald-300 font-semibold transition flex items-center justify-center gap-1">
+            <i data-lucide="shuffle" class="w-3.5 h-3.5"></i> Simplified Debts
+            <span id="count-simplified-debts" class="ml-1 text-[10px] bg-emerald-900/60 px-1.5 py-0.2 rounded">0</span>
+          </button>
+          <button id="tab-debts-original" onclick="setDebtsTab('original')" class="flex-1 py-1 px-2.5 rounded-lg text-slate-400 hover:text-slate-200 transition flex items-center justify-center gap-1">
+            <i data-lucide="list" class="w-3.5 h-3.5"></i> Direct Debts (Unsimplified)
+            <span id="count-original-debts" class="ml-1 text-[10px] bg-slate-800 px-1.5 py-0.2 rounded text-slate-400">0</span>
+          </button>
+        </div>
+
+        <div id="simplified-debts-list" class="space-y-2.5 max-h-72 overflow-y-auto pr-1">
           <p class="text-xs text-slate-500">Connect Splitwise in Step 1 to load active debts.</p>
         </div>
 
@@ -644,12 +658,19 @@ HTML_CONTENT = """<!DOCTYPE html>
 
   <script>
     let currentProvider = 'gemini';
+    let activeGroupId = 0;
+    let cachedGroupData = null;
+    let currentDebtsTab = 'simplified';
 
     async function loadStatus() {
       try {
         const res = await fetch('/api/status');
         const data = await res.json();
         
+        if (data.splitwise && data.splitwise.group_id) {
+          activeGroupId = parseInt(data.splitwise.group_id);
+        }
+
         // Splitwise status
         const swBadge = document.getElementById('badge-splitwise');
         const swIndicator = document.getElementById('sw-status-indicator');
@@ -687,12 +708,12 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         // Permissions
         document.getElementById('status-applescript').innerHTML = data.permissions.applescript 
-          ? '<i data-lucide="check-circle" class="w-4 h-4 text-emerald-400 inline"></i> Ready'
-          : '<i data-lucide="x-circle" class="w-4 h-4 text-red-400 inline"></i> Error';
+            ? '<i data-lucide="check-circle" class="w-4 h-4 text-emerald-400 inline"></i> Ready'
+            : '<i data-lucide="x-circle" class="w-4 h-4 text-red-400 inline"></i> Error';
 
         document.getElementById('status-fda').innerHTML = data.permissions.full_disk_access
-          ? '<i data-lucide="check-circle" class="w-4 h-4 text-emerald-400 inline"></i> Ready'
-          : '<i data-lucide="alert-triangle" class="w-4 h-4 text-amber-400 inline"></i> FDA Required (System Settings)';
+            ? '<i data-lucide="check-circle" class="w-4 h-4 text-emerald-400 inline"></i> Ready'
+            : '<i data-lucide="alert-triangle" class="w-4 h-4 text-amber-400 inline"></i> FDA Required (System Settings)';
 
         lucide.createIcons();
       } catch (e) {
@@ -716,63 +737,135 @@ HTML_CONTENT = """<!DOCTYPE html>
           return;
         }
 
+        // Determine saved active group ID (from server config or localStorage)
+        let savedGid = activeGroupId;
+        if (!savedGid || savedGid === 0) {
+          const localSaved = localStorage.getItem('selected_splitwise_group_id');
+          if (localSaved) savedGid = parseInt(localSaved);
+        }
+
+        let hasMatch = false;
         data.groups.forEach(g => {
           const opt = document.createElement('option');
           opt.value = g.id;
           opt.innerText = g.name;
+          if (savedGid && g.id === savedGid) {
+            opt.selected = true;
+            hasMatch = true;
+          }
           select.appendChild(opt);
         });
+
+        if (hasMatch) {
+          select.value = savedGid;
+        } else if (data.groups.length > 0 && !savedGid) {
+          select.value = data.groups[0].id;
+        }
+
         document.getElementById('group-count').innerText = data.groups.length + ' Groups';
-        loadGroupDetails();
+        await loadGroupDetails(select.value);
       } catch (e) {
         console.error('Error loading groups:', e);
       }
     }
 
-    async function loadGroupDetails() {
-      try {
-        const res = await fetch('/api/group/details');
-        const data = await res.json();
-        
-        document.getElementById('summary-group-name').innerText = data.group_name || 'None selected';
-        const debts = data.simplified_debts || [];
-        document.getElementById('summary-debtors-count').innerText = debts.length + ' open debts';
+    function setDebtsTab(tab) {
+      currentDebtsTab = tab;
+      const btnSimplified = document.getElementById('tab-debts-simplified');
+      const btnOriginal = document.getElementById('tab-debts-original');
 
-        const debtsList = document.getElementById('simplified-debts-list');
-        debtsList.innerHTML = '';
-        
-        if (debts.length === 0) {
-          debtsList.innerHTML = '<p class="text-xs text-slate-500">No open debts found in this group! All settled.</p>';
+      if (tab === 'simplified') {
+        btnSimplified.className = 'flex-1 py-1 px-2.5 rounded-lg bg-emerald-600/30 text-emerald-300 font-semibold transition flex items-center justify-center gap-1';
+        btnOriginal.className = 'flex-1 py-1 px-2.5 rounded-lg text-slate-400 hover:text-slate-200 transition flex items-center justify-center gap-1';
+      } else {
+        btnOriginal.className = 'flex-1 py-1 px-2.5 rounded-lg bg-emerald-600/30 text-emerald-300 font-semibold transition flex items-center justify-center gap-1';
+        btnSimplified.className = 'flex-1 py-1 px-2.5 rounded-lg text-slate-400 hover:text-slate-200 transition flex items-center justify-center gap-1';
+      }
+      renderDebtsList();
+    }
+
+    function renderDebtsList() {
+      if (!cachedGroupData) return;
+      const simplified = cachedGroupData.simplified_debts || [];
+      const original = cachedGroupData.original_debts || [];
+      const debts = currentDebtsTab === 'simplified' ? simplified : original;
+
+      const debtsList = document.getElementById('simplified-debts-list');
+      debtsList.innerHTML = '';
+
+      if (debts.length === 0) {
+        const msg = currentDebtsTab === 'simplified' 
+          ? 'No simplified debts in this group! All balances settled or simplify debts is off.' 
+          : 'No direct debts in this group! All balances settled.';
+        debtsList.innerHTML = `<p class="text-xs text-slate-500">${msg}</p>`;
+      } else {
+        debts.forEach(d => {
+          const div = document.createElement('div');
+          div.className = 'p-3 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between text-xs';
+          div.innerHTML = `
+            <div class="flex items-center gap-2">
+              <span class="font-semibold text-slate-200">${d.from_name}</span>
+              <i data-lucide="arrow-right" class="w-3.5 h-3.5 text-slate-500"></i>
+              <span class="font-semibold text-emerald-400">${d.to_name}</span>
+            </div>
+            <span class="font-mono font-bold text-amber-400">$${d.amount.toFixed(2)}</span>
+          `;
+          debtsList.appendChild(div);
+        });
+      }
+
+      // Update AI Explainer Debtor dropdown to match currently viewed debts
+      const debtorSelect = document.getElementById('chat-debtor-select');
+      debtorSelect.innerHTML = '';
+      if (debts.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.innerText = 'No debtors with open balances in this mode';
+        debtorSelect.appendChild(opt);
+      } else {
+        debts.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.from_name;
+          const modeTag = currentDebtsTab === 'simplified' ? 'simplified' : 'direct';
+          opt.innerText = `${d.from_name} (Owes $${d.amount.toFixed(2)} to ${d.to_name} [${modeTag}])`;
+          debtorSelect.appendChild(opt);
+        });
+      }
+
+      lucide.createIcons();
+    }
+
+    async function loadGroupDetails(groupId) {
+      try {
+        const gid = groupId || document.getElementById('select-group').value;
+        const url = gid ? `/api/group/details?group_id=${gid}` : '/api/group/details';
+        const res = await fetch(url);
+        const data = await res.json();
+        cachedGroupData = data;
+
+        document.getElementById('summary-group-name').innerText = data.group_name || 'None selected';
+        const simplified = data.simplified_debts || [];
+        const original = data.original_debts || [];
+        const activeDebts = data.active_debts || [];
+
+        document.getElementById('summary-debtors-count').innerText = activeDebts.length + ' open debts';
+        document.getElementById('count-simplified-debts').innerText = simplified.length;
+        document.getElementById('count-original-debts').innerText = original.length;
+
+        const badge = document.getElementById('badge-simplify-mode');
+        if (data.simplify_by_default) {
+          badge.innerText = 'Simplify Debts: ON';
+          badge.className = 'text-[11px] px-2 py-0.5 rounded font-medium bg-emerald-950/80 text-emerald-300 border border-emerald-800/80';
         } else {
-          debts.forEach(d => {
-            const div = document.createElement('div');
-            div.className = 'p-3 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between text-xs';
-            div.innerHTML = `
-              <div class="flex items-center gap-2">
-                <span class="font-semibold text-slate-200">${d.from_name}</span>
-                <i data-lucide="arrow-right" class="w-3.5 h-3.5 text-slate-500"></i>
-                <span class="font-semibold text-emerald-400">${d.to_name}</span>
-              </div>
-              <span class="font-mono font-bold text-amber-400">$${d.amount.toFixed(2)}</span>
-            `;
-            debtsList.appendChild(div);
-          });
+          badge.innerText = 'Simplify Debts: OFF (Direct Debts)';
+          badge.className = 'text-[11px] px-2 py-0.5 rounded font-medium bg-amber-950/80 text-amber-300 border border-amber-800/80';
         }
 
-        const debtorSelect = document.getElementById('chat-debtor-select');
-        debtorSelect.innerHTML = '';
-        if (debts.length === 0) {
-          const opt = document.createElement('option');
-          opt.value = '';
-          opt.innerText = 'No debtors with open balances in this group';
-          debtorSelect.appendChild(opt);
+        // Set active debts tab based on simplify_debts_enabled
+        if (!data.simplify_debts_enabled && original.length > 0) {
+          setDebtsTab('original');
         } else {
-          debts.forEach(d => {
-            const opt = document.createElement('option');
-            opt.value = d.from_name;
-            opt.innerText = `${d.from_name} (Owes $${d.amount.toFixed(2)} to ${d.to_name})`;
-            debtorSelect.appendChild(opt);
-          });
+          setDebtsTab('simplified');
         }
 
         // Render Member Phone Directory
@@ -828,12 +921,14 @@ HTML_CONTENT = """<!DOCTYPE html>
     async function onGroupChanged() {
       const gid = document.getElementById('select-group').value;
       if (!gid) return;
+      activeGroupId = parseInt(gid);
+      localStorage.setItem('selected_splitwise_group_id', gid);
       await fetch('/api/config/group', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({group_id: parseInt(gid)})
       });
-      loadGroupDetails();
+      await loadGroupDetails(gid);
     }
 
     function setProvider(p) {
@@ -980,9 +1075,12 @@ HTML_CONTENT = """<!DOCTYPE html>
       setTimeout(() => { loadStatus(); }, 4000);
     }
 
-    // Init
-    loadStatus();
-    loadGroups();
+    // Sequential initialization
+    async function init() {
+      await loadStatus();
+      await loadGroups();
+    }
+    init();
   </script>
 </body>
 </html>

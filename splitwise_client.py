@@ -156,7 +156,7 @@ class SplitwiseClient:
                 }
 
             simplified_debts = []
-            for debt in group.getSimplifiedDebts():
+            for debt in (group.getSimplifiedDebts() or []):
                 from_id = debt.getFromUser() if hasattr(debt, "getFromUser") else debt.getFrom()
                 to_id = debt.getToUser() if hasattr(debt, "getToUser") else debt.getTo()
                 from_name = members_map.get(from_id, {}).get("name", f"User {from_id}")
@@ -169,6 +169,26 @@ class SplitwiseClient:
                     "amount": float(debt.getAmount()),
                     "currency": debt.getCurrencyCode()
                 })
+
+            original_debts = []
+            for debt in (group.getOriginalDebts() or []):
+                from_id = debt.getFromUser() if hasattr(debt, "getFromUser") else debt.getFrom()
+                to_id = debt.getToUser() if hasattr(debt, "getToUser") else debt.getTo()
+                from_name = members_map.get(from_id, {}).get("name", f"User {from_id}")
+                to_name = members_map.get(to_id, {}).get("name", f"User {to_id}")
+                original_debts.append({
+                    "from_id": from_id,
+                    "from_name": from_name,
+                    "to_id": to_id,
+                    "to_name": to_name,
+                    "amount": float(debt.getAmount()),
+                    "currency": debt.getCurrencyCode()
+                })
+
+            simplify_by_default = getattr(group, "simplify_by_default", True)
+            # If simplify_by_default is False or simplified_debts is empty, use original debts
+            simplify_debts_enabled = bool(simplify_by_default and simplified_debts)
+            active_debts = simplified_debts if simplify_debts_enabled else original_debts
 
             expenses = self.s.getExpenses(group_id=group_id, limit=50)
             parsed_expenses = []
@@ -201,7 +221,11 @@ class SplitwiseClient:
                 "group_id": group_id,
                 "group_name": group.getName(),
                 "members": members_map,
+                "simplify_debts_enabled": simplify_debts_enabled,
+                "simplify_by_default": bool(simplify_by_default),
                 "simplified_debts": simplified_debts,
+                "original_debts": original_debts,
+                "active_debts": active_debts,
                 "expenses": parsed_expenses
             }
         except Exception as e:
@@ -263,11 +287,14 @@ class SplitwiseClient:
         u_name = target_member["name"]
         net_balance = target_member["net_balance"]
 
+        is_simplified = data.get("simplify_debts_enabled", True)
+        active_debts = data.get("active_debts") or data.get("simplified_debts") or []
+
         settlements_to_pay = [
-            d for d in data["simplified_debts"] if d["from_id"] == u_id
+            d for d in active_debts if d["from_id"] == u_id
         ]
         settlements_to_receive = [
-            d for d in data["simplified_debts"] if d["to_id"] == u_id
+            d for d in active_debts if d["to_id"] == u_id
         ]
 
         consumed_items = []
@@ -291,11 +318,13 @@ class SplitwiseClient:
                         "split_among": consumed_by_str
                     })
 
+        graph_descriptor = "pays" if is_simplified else "owes directly to"
         return {
             "group_name": data["group_name"],
             "user_name": u_name,
             "user_id": u_id,
             "net_balance": net_balance,
+            "is_simplified": is_simplified,
             "simplified_settlements": settlements_to_pay,
             "incoming_settlements": settlements_to_receive,
             "consumed_items": consumed_items,
@@ -304,7 +333,7 @@ class SplitwiseClient:
                 m["name"]: m["net_balance"] for m in members.values()
             },
             "simplified_debts_graph": [
-                f"{d['from_name']} pays {d['to_name']} ${d['amount']:.2f}"
-                for d in data["simplified_debts"]
+                f"{d['from_name']} {graph_descriptor} {d['to_name']} ${d['amount']:.2f}"
+                for d in active_debts
             ]
         }

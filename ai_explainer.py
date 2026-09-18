@@ -77,6 +77,25 @@ class AIExplainer:
             )
             total_paid += item["amount_paid"]
 
+        is_simplified = context.get("is_simplified", True)
+        if is_simplified:
+            active_system_prompt = SYSTEM_PROMPT
+            debt_header = "SIMPLIFIED DEBT INSTRUCTION"
+            graph_header = "SIMPLIFIED DEBT ROUTING GRAPH"
+            default_question = "Why do I owe this amount, and why am I paying this specific person?"
+        else:
+            active_system_prompt = """You are a helpful, concise iMessage financial assistant for a Splitwise group.
+The group has "Simplify Debts" turned OFF. All debts are direct, 1-to-1 unsimplified balances between members.
+Your job is to:
+1. Break down what they consumed vs what they paid for shared expenses.
+2. Clearly explain why they owe this specific person directly based on direct shared transactions. Do NOT mention debt simplification or routing chains.
+3. Keep it brief, friendly, and formatted for a text message (short paragraphs, max 150-180 words).
+Rely strictly on the provided ledger figures. Do not make up any numbers.
+"""
+            debt_header = "DIRECT UN-SIMPLIFIED DEBTS TO SETTLE"
+            graph_header = "DIRECT MEMBER-TO-MEMBER DEBTS"
+            default_question = "Why do I owe this amount directly to this person?"
+
         settlements_str = ", ".join(
             [f"Pay {s['to_name']} ${s['amount']:.2f}" for s in settlements]
         ) if settlements else "No outgoing payments needed (balance settled)."
@@ -84,7 +103,8 @@ class AIExplainer:
         ledger_prompt = f"""GROUP: {context['group_name']}
 USER: {user_name}
 NET BALANCE: ${net_balance:.2f} (negative means user owes money)
-SIMPLIFIED DEBT INSTRUCTION: {settlements_str}
+MODE: {"Simplified Debts Enabled" if is_simplified else "Direct Unsimplified Debts (Simplify Debts OFF)"}
+{debt_header}: {settlements_str}
 
 USER EXPENSE CONSUMPTION (Total: ${total_consumed:.2f}):
 {chr(10).join(consumed_lines) or "None"}
@@ -95,10 +115,10 @@ USER DIRECT PAYMENTS (Total: ${total_paid:.2f}):
 GROUP NET BALANCES:
 {", ".join(f"{k}: ${v:.2f}" for k, v in group_balances.items())}
 
-SIMPLIFIED DEBT ROUTING:
+{graph_header}:
 {"; ".join(graph)}
 
-USER QUESTION: {user_question or "Why do I owe this amount, and why am I paying this specific person?"}
+USER QUESTION: {user_question or default_question}
 """
 
         try:
@@ -106,7 +126,7 @@ USER QUESTION: {user_question or "Why do I owe this amount, and why am I paying 
                 response = self.openai_client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": active_system_prompt},
                         {"role": "user", "content": ledger_prompt}
                     ],
                     max_tokens=250,
@@ -115,7 +135,7 @@ USER QUESTION: {user_question or "Why do I owe this amount, and why am I paying 
                 return response.choices[0].message.content.strip()
 
             elif self.provider == "gemini" and self.gemini_client:
-                full_prompt = f"{SYSTEM_PROMPT}\n\n{ledger_prompt}"
+                full_prompt = f"{active_system_prompt}\n\n{ledger_prompt}"
                 # Try gemini-3.6-flash, fallback to gemini-2.0-flash / gemini-1.5-flash if needed
                 last_err = None
                 for m in ["gemini-3.6-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
