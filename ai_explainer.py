@@ -100,11 +100,17 @@ Rely strictly on the provided ledger figures. Do not make up any numbers.
             [f"Pay {s['to_name']} ${s['amount']:.2f}" for s in settlements]
         ) if settlements else "No outgoing payments needed (balance settled)."
 
+        incoming = context.get("incoming_settlements", [])
+        incoming_str = ", ".join(
+            [f"Collect from {s['from_name']} ${s['amount']:.2f}" for s in incoming]
+        ) if incoming else "None"
+
         ledger_prompt = f"""GROUP: {context['group_name']}
 USER: {user_name}
-NET BALANCE: ${net_balance:.2f} (negative means user owes money)
+NET BALANCE: ${net_balance:.2f} (negative means user owes money, positive means user is owed money)
 MODE: {"Simplified Debts Enabled" if is_simplified else "Direct Unsimplified Debts (Simplify Debts OFF)"}
 {debt_header}: {settlements_str}
+INCOMING MONEY OWED TO USER: {incoming_str}
 
 USER EXPENSE CONSUMPTION (Total: ${total_consumed:.2f}):
 {chr(10).join(consumed_lines) or "None"}

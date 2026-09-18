@@ -96,6 +96,57 @@ class SplitwiseBot:
                 "amount": amount
             }
 
+        # Also notify creditors (the people the money is owed to so they know)
+        creditor_debts: Dict[int, List[Dict[str, Any]]] = {}
+        for debt in active_debts:
+            to_id = debt["to_id"]
+            if to_id not in creditor_debts:
+                creditor_debts[to_id] = []
+            creditor_debts[to_id].append(debt)
+
+        print(f"\nNotifying {len(creditor_debts)} creditor(s) of incoming settlements:")
+        for to_id, debts in creditor_debts.items():
+            to_member = group_data["members"].get(to_id, {})
+            to_name = to_member.get("name", f"Member {to_id}")
+            to_phone = to_member.get("phone") or to_member.get("email")
+
+            if not to_phone:
+                print(f"-> [Notice] No phone number resolved for creditor {to_name}. Heads-up skipped.")
+                continue
+
+            total_owed = sum(d["amount"] for d in debts)
+            settle_type = "via simplified debts" if simplify_debts_enabled else "directly"
+
+            if len(debts) == 1:
+                d = debts[0]
+                creditor_msg = (
+                    f"Hey {to_name}! Splitwise heads-up for '{group_name}':\n"
+                    f"{d['from_name']} owes you ${d['amount']:.2f} ({settle_type}).\n\n"
+                    f"A friendly automated reminder with an expense breakdown has been sent to {d['from_name']} to settle up with you!\n"
+                    f"👉 (Tip: Swipe right or tap & hold to 'Reply' to this message if you have questions or to see a breakdown!)"
+                )
+            else:
+                lines = [f"• {d['from_name']}: ${d['amount']:.2f}" for d in debts]
+                creditor_msg = (
+                    f"Hey {to_name}! Splitwise heads-up for '{group_name}':\n"
+                    f"You are owed a total of ${total_owed:.2f} ({settle_type}) from {len(debts)} roommates:\n"
+                    f"{chr(10).join(lines)}\n\n"
+                    f"Friendly automated reminders with expense breakdowns have been sent to each person to settle up with you!\n"
+                    f"👉 (Tip: Swipe right or tap & hold to 'Reply' to this message if you have questions or to see a breakdown!)"
+                )
+
+            print(f"-> Creditor: {to_name} is owed ${total_owed:.2f}")
+            print(f"   Dispatching heads-up iMessage to: {to_phone}")
+            self.imessage.send_message(to_phone, creditor_msg)
+
+            clean_digits = "".join(c for c in to_phone if c.isdigit())
+            self.active_reminder_sessions[clean_digits] = {
+                "name": to_name,
+                "timestamp": time.time(),
+                "amount": total_owed,
+                "is_creditor": True
+            }
+
     def handle_incoming_question(self, sender: str, question_text: str):
         """Processes an incoming iMessage question using the AI Explainer."""
         print(f"\n[Inbound iMessage] From: {sender} | Question: {question_text}")
