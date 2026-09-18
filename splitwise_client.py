@@ -130,20 +130,28 @@ class SplitwiseClient:
             if not group:
                 return empty_group
 
+            from contacts_resolver import ContactsResolver
+            resolver = ContactsResolver()
+
             members_map = {}
             for member in group.getMembers():
                 net_balance = 0.0
                 for b in member.getBalances():
                     net_balance += float(b.getAmount())
                 
-                phone_num = getattr(member, "phone_number", None) or getattr(member, "phone", "")
+                sp_phone = getattr(member, "phone_number", None) or getattr(member, "phone", "")
                 full_name = f"{member.getFirstName() or ''} {member.getLastName() or ''}".strip()
+                email = member.getEmail() or ""
                 
+                # Auto-resolve phone from Contacts / Directory / Splitwise
+                phone_info = resolver.resolve_member_phone(member.getId(), full_name, email=email, splitwise_phone=sp_phone)
+
                 members_map[member.getId()] = {
                     "id": member.getId(),
                     "name": full_name or f"User {member.getId()}",
-                    "email": member.getEmail() or "",
-                    "phone": phone_num or "",
+                    "email": email,
+                    "phone": phone_info["phone"],
+                    "phone_source": phone_info["source"],
                     "net_balance": round(net_balance, 2)
                 }
 

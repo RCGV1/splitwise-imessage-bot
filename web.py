@@ -52,6 +52,10 @@ class AskAIRequest(BaseModel):
 class TriggerRemindRequest(BaseModel):
     live: bool = False
 
+class UpdatePhoneRequest(BaseModel):
+    member_id: int
+    phone: str
+
 # ---------------------------------------------------------------------------
 # API Routes
 # ---------------------------------------------------------------------------
@@ -276,6 +280,13 @@ def ask_ai_explanation(payload: AskAIRequest):
             "simplified_settlements": context["simplified_settlements"]
         }
     }
+
+@app.post("/api/members/phone")
+def update_member_phone(payload: UpdatePhoneRequest):
+    from contacts_resolver import ContactsResolver
+    resolver = ContactsResolver()
+    cleaned = resolver.set_member_phone(payload.member_id, payload.phone)
+    return {"success": True, "phone": cleaned}
 
 @app.post("/api/bot/remind")
 def trigger_reminders(payload: TriggerRemindRequest):
@@ -522,6 +533,19 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div id="simplified-debts-list" class="space-y-2.5">
           <p class="text-xs text-slate-500">Connect Splitwise in Step 1 to load active debts.</p>
         </div>
+
+        <!-- Member Phone Directory -->
+        <div class="mt-6 pt-4 border-t border-slate-800">
+          <div class="flex items-center justify-between mb-3">
+            <h4 class="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+              <i data-lucide="contact" class="w-4 h-4 text-blue-400"></i> Participant Phone Numbers
+            </h4>
+            <span class="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-emerald-400">Auto-Resolved from Mac Contacts</span>
+          </div>
+          <div id="members-phone-list" class="space-y-2">
+            <!-- Populated by JS -->
+          </div>
+        </div>
       </div>
 
       <!-- RIGHT: Test Real iMessage & macOS Permissions -->
@@ -751,9 +775,53 @@ HTML_CONTENT = """<!DOCTYPE html>
           });
         }
 
+        // Render Member Phone Directory
+        const phoneList = document.getElementById('members-phone-list');
+        if (phoneList && data.members) {
+          phoneList.innerHTML = '';
+          Object.values(data.members).forEach(m => {
+            const div = document.createElement('div');
+            div.className = 'p-2.5 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between text-xs';
+            const phoneDisplay = m.phone ? m.phone : '<span class="text-amber-400 font-medium">Missing</span>';
+            const sourceBadge = m.phone_source && m.phone_source.includes('Mac Contacts')
+              ? '<span class="text-[10px] bg-emerald-950/60 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-800/60">Mac Contacts</span>'
+              : m.phone ? '<span class="text-[10px] bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded">Saved</span>' : '';
+
+            div.innerHTML = `
+              <div class="overflow-hidden">
+                <p class="font-medium text-slate-200 truncate">${m.name}</p>
+                <p class="text-[10px] text-slate-500 truncate">${m.email}</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-slate-300 text-[11px]">${phoneDisplay}</span>
+                ${sourceBadge}
+                <button onclick="editMemberPhone(${m.id}, '${m.name}', '${m.phone || ''}')" class="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 transition" title="Edit phone number">
+                  <i data-lucide="edit-2" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+            `;
+            phoneList.appendChild(div);
+          });
+        }
+
         lucide.createIcons();
       } catch (e) {
         console.error('Error loading group details:', e);
+      }
+    }
+
+    async function editMemberPhone(id, name, currentPhone) {
+      const newPhone = prompt('Enter phone number for ' + name + ':', currentPhone);
+      if (newPhone !== null && newPhone.trim() !== '') {
+        const res = await fetch('/api/members/phone', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({member_id: id, phone: newPhone})
+        });
+        const data = await res.json();
+        if (data.success) {
+          loadGroupDetails();
+        }
       }
     }
 
