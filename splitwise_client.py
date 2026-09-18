@@ -212,14 +212,41 @@ class SplitwiseClient:
             return None
 
         target_member = None
-        cleaned_query = user_query.strip().lower().replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
+        raw_query = user_query.strip().lower()
+        cleaned_query = "".join(c for c in raw_query if c.isalnum())
         
-        for m in members.values():
-            m_name = m["name"].lower()
-            m_phone = str(m["phone"]).replace("-", "").replace(" ", "")
-            if cleaned_query in m_name or (m_phone and cleaned_query in m_phone):
-                target_member = m
-                break
+        # 1. Try matching by exact numeric user ID
+        if raw_query.isdigit() and int(raw_query) in members:
+            target_member = members[int(raw_query)]
+
+        # 2. Match by normalized name, email, phone, or name tokens
+        if not target_member:
+            for m in members.values():
+                m_name = m["name"].lower()
+                clean_m_name = "".join(c for c in m_name if c.isalnum())
+                m_email = m.get("email", "").lower()
+                m_phone = "".join(c for c in str(m.get("phone", "")) if c.isalnum())
+                
+                # Direct normalized name match (e.g. 'elibraswell' in 'elibraswell')
+                if cleaned_query and (cleaned_query in clean_m_name or clean_m_name in cleaned_query):
+                    target_member = m
+                    break
+                
+                # Email match
+                if raw_query and m_email and (raw_query in m_email or m_email in raw_query):
+                    target_member = m
+                    break
+
+                # Phone match
+                if cleaned_query and m_phone and (cleaned_query in m_phone or m_phone.endswith(cleaned_query)):
+                    target_member = m
+                    break
+
+                # Name tokens (e.g. 'Eli' matches 'Eli Braswell')
+                name_tokens = [t for t in m_name.split() if t]
+                if any(t == raw_query or t in raw_query for t in name_tokens):
+                    target_member = m
+                    break
 
         if not target_member:
             return None
