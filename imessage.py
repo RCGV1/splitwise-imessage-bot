@@ -65,31 +65,78 @@ class IMessageBridge:
         except Exception as e:
             print(f"Notice: Could not save {BOT_MESSAGES_FILE}: {e}")
 
+    @staticmethod
+    def _decode_attributed_body(data: Optional[bytes]) -> str:
+        """Extracts plain text string from macOS typedstream NSAttributedString binary blob."""
+        if not data:
+            return ""
+        try:
+            import re
+            idx = data.find(b"NSString")
+            if idx != -1:
+                data = data[idx:]
+            parts = re.findall(rb"[\x20-\x7e]{2,}", data)
+            cleaned = [p.decode("utf-8", errors="ignore").strip() for p in parts]
+            filtered = [
+                p for p in cleaned
+                if p not in (
+                    "NSString", "NSDictionary", "NSNumber", "NSValue", "NSObject",
+                    "__kIMMessagePartAttributeName", "streamtyped", "NSMutableAttributedString",
+                    "NSAttributedString", "NSMutableString"
+                ) and not p.startswith("__kIM")
+            ]
+            return " ".join(filtered).strip()
+        except Exception:
+            return ""
+
     def record_bot_guid(self, guid: str):
         """Records a message GUID as having been sent by the bot."""
         if guid:
             self.sent_bot_guids.add(guid)
             self._save_sent_guids()
 
-    def _fetch_and_record_latest_sent_guid(self):
-        """Finds the most recently sent message in chat.db and records its GUID."""
+    def _fetch_and_record_latest_sent_guid(self, recipient: Optional[str] = None, message_text: Optional[str] = None) -> Optional[str]:
+        """
+        Finds the most recently sent bot message in chat.db and records its GUID.
+        Strictly filters by recipient and recent timestamp so personal outbound texts
+        are never mistaken for bot messages.
+        """
         if not CHAT_DB_PATH.exists():
             return None
         try:
             conn = sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True)
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT guid FROM message 
-                WHERE is_from_me = 1 
-                ORDER BY date DESC LIMIT 1;
-            """)
+
+            # Within last 45 seconds in Apple Cocoa time
+            cutoff_cocoa = int((time.time() - 978307200 - 45) * 1_000_000_000)
+
+            if recipient:
+                clean_digits = "".join(c for c in recipient if c.isdigit())
+                cursor.execute("""
+                    SELECT m.guid 
+                    FROM message m
+                    LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+                    LEFT JOIN chat c ON cmj.chat_id = c.ROWID
+                    WHERE m.is_from_me = 1 
+                      AND m.date >= ?
+                      AND (c.chat_identifier LIKE ? OR c.guid LIKE ?)
+                    ORDER BY m.date DESC LIMIT 1;
+                """, (cutoff_cocoa, f"%{clean_digits}%", f"%{clean_digits}%"))
+            else:
+                cursor.execute("""
+                    SELECT m.guid FROM message 
+                    WHERE m.is_from_me = 1 
+                      AND m.date >= ?
+                    ORDER BY m.date DESC LIMIT 1;
+                """, (cutoff_cocoa,))
+
             row = cursor.fetchone()
             conn.close()
             if row and row[0]:
                 self.record_bot_guid(row[0])
                 return row[0]
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Notice: Could not fetch sent message GUID: {e}")
         return None
 
     @staticmethod
@@ -152,7 +199,7 @@ class IMessageBridge:
             )
             # Give macOS Messages a brief moment to write the message to chat.db
             time.sleep(0.5)
-            self._fetch_and_record_latest_sent_guid()
+            self._fetch_and_record_latest_sent_guid(recipient=clean_recipient, message_text=safe_msg)
             return True
         except subprocess.CalledProcessError as e:
             print(f"Failed to send iMessage to {clean_recipient}: {e.stderr.strip()}")
@@ -217,12 +264,13 @@ class IMessageBridge:
                 h.id AS sender_handle,
                 m.is_from_me,
                 m.reply_to_guid,
-                m.thread_originator_guid
+                m.thread_originator_guid,
+                m.attributedBody
             FROM message m
             LEFT JOIN handle h ON m.handle_id = h.ROWID
             WHERE m.date > ? 
               AND m.is_from_me = 0 
-              AND m.text IS NOT NULL
+              AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL)
               AND (m.associated_message_type IS NULL OR m.associated_message_type = 0)
             ORDER BY m.date ASC;
             """
@@ -232,7 +280,7 @@ class IMessageBridge:
 
             new_msgs = []
             for row in rows:
-                row_id, guid, date, text, sender, is_from_me, reply_to_guid, thread_originator_guid = row
+                row_id, guid, date, text, sender, is_from_me, reply_to_guid, thread_originator_guid, attributed_body = row
                 if date > self.last_checked_date:
                     self.last_checked_date = date
 
@@ -241,16 +289,27 @@ class IMessageBridge:
                 if guid:
                     self.seen_message_guids.add(guid)
 
+                msg_text = text if text else self._decode_attributed_body(attributed_body)
+                if not msg_text or not msg_text.strip():
+                    continue
+
+                # In Apple Messages (iOS/macOS), a genuine inline thread reply ALWAYS sets
+                # thread_originator_guid. When someone sends a regular chat message,
+                # thread_originator_guid is NULL (even though Apple often sets reply_to_guid
+                # to the preceding message). We strictly require thread_originator_guid to match
+                # our sent bot message GUID so casual texts in personal chats are NEVER intercepted.
                 is_reply = bool(
-                    (reply_to_guid and reply_to_guid in self.sent_bot_guids) or
-                    (thread_originator_guid and thread_originator_guid in self.sent_bot_guids)
+                    thread_originator_guid and (
+                        thread_originator_guid in self.sent_bot_guids or
+                        (reply_to_guid and reply_to_guid in self.sent_bot_guids)
+                    )
                 )
 
                 new_msgs.append({
                     "id": row_id,
                     "guid": guid,
                     "date": date,
-                    "text": text,
+                    "text": msg_text.strip(),
                     "sender": sender or "Unknown",
                     "is_from_me": bool(is_from_me),
                     "reply_to_guid": reply_to_guid,

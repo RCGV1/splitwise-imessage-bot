@@ -220,38 +220,25 @@ class SplitwiseBot:
     def is_reply_to_bot(self, msg: Dict[str, Any]) -> bool:
         """
         Determines whether an incoming text is a genuine reply to the bot.
-        Uses native Apple Messages thread reply detection (reply_to_guid)
-        so NO arbitrary keywords are required, keeping personal conversations safe.
+        Uses native Apple Messages inline thread reply detection (thread_originator_guid)
+        so personal chats are 100% protected and casual texts are ignored.
         """
-        # 1. Native iMessage thread reply (swiped or tapped 'Reply' on the reminder bubble)
+        # 1. Native iMessage inline thread reply (swiped or tapped 'Reply' on the reminder bubble)
         if msg.get("is_thread_reply"):
             return True
 
-        reply_to = msg.get("reply_to_guid")
+        # 2. Check if thread_originator_guid directly matches any bot sent GUID
         thread_root = msg.get("thread_originator_guid")
-        if (reply_to and reply_to in self.imessage.sent_bot_guids) or (thread_root and thread_root in self.imessage.sent_bot_guids):
+        if thread_root and thread_root in self.imessage.sent_bot_guids:
             return True
 
-        sender = msg.get("sender", "")
-        clean_sender = "".join(c for c in sender if c.isdigit())
+        # 3. Explicit bot command tag (e.g. "@bot", "bot:", "bot ") for non-iMessage/SMS fallbacks
         raw_text = msg.get("text", "").strip()
         lower_text = raw_text.lower()
-
-        # 2. Explicit bot tag/prefix (e.g. "@bot", "bot:", "reply:")
         if lower_text.startswith("@bot") or lower_text.startswith("bot:") or lower_text.startswith("bot "):
             return True
 
-        # 3. Active reminder follow-up: sender received a reminder within 48h and is asking a question
-        has_active_session = False
-        for phone_key, sess in self.active_reminder_sessions.items():
-            if phone_key.endswith(clean_sender) or clean_sender.endswith(phone_key):
-                if time.time() - sess["timestamp"] < 172800: # 48 hours
-                    has_active_session = True
-                    break
-
-        if has_active_session and ("?" in lower_text or lower_text.startswith("why") or lower_text.startswith("how")):
-            return True
-
+        # All other messages (casual texts, questions without thread reply or @bot) are strictly ignored!
         return False
 
     def run_listener_loop(self, poll_interval: int = 3):
