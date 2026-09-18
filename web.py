@@ -224,11 +224,18 @@ def test_ai_connection():
         elif config.AI_PROVIDER == "gemini":
             from google import genai
             client = genai.Client(api_key=config.GEMINI_API_KEY)
-            resp = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents="Respond strictly with: 'Gemini connected'",
-            )
-            return {"success": True, "reply": resp.text.strip()}
+            last_err = None
+            for m in ["gemini-3.6-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+                try:
+                    resp = client.models.generate_content(
+                        model=m,
+                        contents="Respond strictly with: 'Gemini connected'",
+                    )
+                    return {"success": True, "reply": f"{resp.text.strip()} ({m})"}
+                except Exception as err:
+                    last_err = err
+            if last_err:
+                raise last_err
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -450,7 +457,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             <div class="p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-[11px] text-slate-300 space-y-1.5">
               <div class="flex items-center justify-between">
                 <span class="font-medium text-emerald-400 flex items-center gap-1">
-                  <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> Google Gemini 2.5 Flash
+                  <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> Google Gemini 3.6 Flash
                 </span>
                 <span class="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-400">Free Tier</span>
               </div>

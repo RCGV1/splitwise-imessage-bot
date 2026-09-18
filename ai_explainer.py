@@ -116,11 +116,19 @@ USER QUESTION: {user_question or "Why do I owe this amount, and why am I paying 
 
             elif self.provider == "gemini" and self.gemini_client:
                 full_prompt = f"{SYSTEM_PROMPT}\n\n{ledger_prompt}"
-                response = self.gemini_client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=full_prompt,
-                )
-                return response.text.strip()
+                # Try gemini-3.6-flash, fallback to gemini-2.0-flash / gemini-1.5-flash if needed
+                last_err = None
+                for m in ["gemini-3.6-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+                    try:
+                        response = self.gemini_client.models.generate_content(
+                            model=m,
+                            contents=full_prompt,
+                        )
+                        return response.text.strip()
+                    except Exception as err:
+                        last_err = err
+                if last_err:
+                    raise last_err
             else:
                 return "⚠️ Selected AI provider is not available or credentials missing."
 

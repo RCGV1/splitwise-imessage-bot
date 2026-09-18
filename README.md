@@ -72,7 +72,7 @@ You can set these in the Web UI or directly in [.env](file:///.env):
   AI_PROVIDER=gemini
   GEMINI_API_KEY=AIzaSy...
   ```
-  Uses `gemini-2.5-flash` (free tier eligible, essentially $0.00).
+  Uses `gemini-3.6-flash` (free tier eligible, essentially $0.00).
 
 ---
 
