@@ -10,6 +10,7 @@ Web Onboarding and Management Dashboard for Splitwise iMessage Bot.
 
 import os
 import subprocess
+import threading
 from pathlib import Path
 from typing import Optional
 from fastapi import FastAPI, Request, Form
@@ -27,6 +28,23 @@ app = FastAPI(title="Splitwise iMessage Bot Dashboard")
 sw_client = SplitwiseClient()
 ai_client = AIExplainer()
 imessage_bridge = IMessageBridge(dry_run=config.DRY_RUN)
+
+listener_thread: Optional[threading.Thread] = None
+
+def start_background_listener():
+    global listener_thread
+    if listener_thread is None or not listener_thread.is_alive():
+        try:
+            bot_listener = SplitwiseBot(dry_run=False)
+            listener_thread = threading.Thread(target=bot_listener.run_listener_loop, args=(3,), daemon=True)
+            listener_thread.start()
+            print("[Web] Background iMessage reply listener thread started.")
+        except Exception as e:
+            print(f"[Web] Notice: Could not start listener thread: {e}")
+
+@app.on_event("startup")
+def on_startup():
+    start_background_listener()
 
 # ---------------------------------------------------------------------------
 # API Models
@@ -95,7 +113,8 @@ def get_status():
         "bot": {
             "reminder_days": config.REMINDER_INTERVAL_DAYS,
             "auto_remind_enabled": config.AUTO_REMIND_ENABLED,
-            "dry_run": config.DRY_RUN
+            "dry_run": config.DRY_RUN,
+            "listener_running": bool(listener_thread and listener_thread.is_alive())
         }
     }
 
